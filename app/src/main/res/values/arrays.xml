@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="xposedscope" >
+        <item>org.krita</item>
+        <item>net.huanci.hsjpro</item>
+    </string-array>
+</resources>

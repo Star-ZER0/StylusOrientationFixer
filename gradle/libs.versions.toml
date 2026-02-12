@@ -1,0 +1,9 @@
+[versions]
+agp = "9.0.0"
+xposed-api = "82"
+
+[libraries]
+xposed-api = { group = "de.robv.android.xposed", name = "api", version.ref = "xposed-api" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
