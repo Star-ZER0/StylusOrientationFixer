@@ -1,8 +1,8 @@
 //Copyright 2026 星澪Star_ZER0. All rights reserved.
-/**
- * 草泥马小米你冯亖了从MIUI14就有的Bug给你反馈了也不修到HyperOS3都几把还有
- * 尼玛的都是吃白饭的是吧有Bug不修是等着过年吗
- * 天天更新就写个对联合个补丁，还不让解锁BL谁几把还买你的东西，滚吧乐色玩意
+/*
+  草泥马小米你冯亖了从MIUI14就有的Bug给你反馈了也不修到HyperOS3都几把还有
+  尼玛的都是吃白饭的是吧有Bug不修是等着过年吗
+  天天更新就写个对联合个补丁，还不让解锁BL谁几把还买你的东西，滚吧乐色玩意
  */
 package cc.star0.stylusorientationfixer;
 
@@ -102,7 +102,9 @@ public class MainHook implements IXposedHookLoadPackage {
 
     /**
      * 从原始 MotionEvent 中提取所有 pointer 数据，旋转触控笔的 orientation，
-     * 用 MotionEvent.obtain() 重建新事件并替换 param.args[1]，回收原事件。
+     * 用 MotionEvent.obtain() 重建新事件并替换 param.args[1]。
+     * <p>
+     * 注意：不可 recycle 原始事件，其生命周期由系统 native 层管理。
      */
     private void patchMotionEvent(XC_MethodHook.MethodHookParam param) {
         MotionEvent event = (MotionEvent) param.args[1];
@@ -124,33 +126,48 @@ public class MainHook implements IXposedHookLoadPackage {
                     + " historySize=" + event.getHistorySize());
         }
 
-        // 提取 pointer 0 的属性和坐标（笔输入只有一个 pointer）
+        // 提取 pointer 0 的属性（笔输入只有一个 pointer）
         MotionEvent.PointerProperties[] props = { new MotionEvent.PointerProperties() };
-        MotionEvent.PointerCoords[] coords = { new MotionEvent.PointerCoords() };
         event.getPointerProperties(0, props[0]);
-        event.getPointerCoords(0, coords[0]);
 
-        float origOrientation = coords[0].orientation;
-        float newOrientation = rotateOrientation(origOrientation);
+        int historySize = event.getHistorySize();
 
-        if (DEBUG) {
-            XposedBridge.log(TAG + " [patch] orientation: " + origOrientation
-                    + " -> " + newOrientation
-                    + " | tilt=" + coords[0].getAxisValue(MotionEvent.AXIS_TILT)
-                    + " | pressure=" + coords[0].pressure
-                    + " | x=" + coords[0].x + " y=" + coords[0].y);
+        // ---- 确定 obtain() 使用的初始样本 ----
+        // addBatch() 语义：当前样本 → 历史末尾，新数据 → 当前样本
+        // 因此必须按时间顺序喂入：history[0] → history[1] → … → current
+        MotionEvent.PointerCoords[] initialCoords = { new MotionEvent.PointerCoords() };
+        long initialTime;
+
+        if (historySize > 0) {
+            // 以第一个历史样本作为起始
+            event.getHistoricalPointerCoords(0, 0, initialCoords[0]);
+            initialTime = event.getHistoricalEventTime(0);
+        } else {
+            // 无历史，直接用当前样本
+            event.getPointerCoords(0, initialCoords[0]);
+            initialTime = event.getEventTime();
         }
 
-        coords[0].orientation = newOrientation;
+        float origOrientation = initialCoords[0].orientation;
+        float newOrientation = rotateOrientation(origOrientation);
+        initialCoords[0].orientation = newOrientation;
 
-        // 重建事件
+        if (DEBUG) {
+            XposedBridge.log(TAG + " [patch] initial orientation: " + origOrientation
+                    + " -> " + newOrientation
+                    + " | tilt=" + initialCoords[0].getAxisValue(MotionEvent.AXIS_TILT)
+                    + " | pressure=" + initialCoords[0].pressure
+                    + " | x=" + initialCoords[0].x + " y=" + initialCoords[0].y);
+        }
+
+        // 用初始样本创建事件
         MotionEvent patched = MotionEvent.obtain(
                 event.getDownTime(),
-                event.getEventTime(),
+                initialTime,
                 event.getAction(),
                 1,
                 props,
-                coords,
+                initialCoords,
                 event.getMetaState(),
                 event.getButtonState(),
                 event.getXPrecision(),
@@ -160,26 +177,27 @@ public class MainHook implements IXposedHookLoadPackage {
                 event.getSource(),
                 event.getFlags());
 
-        // 复制历史批次
-        int historySize = event.getHistorySize();
+        // ---- 按正确顺序追加剩余样本 ----
         if (historySize > 0) {
             if (DEBUG) XposedBridge.log(TAG + " [patch] Processing " + historySize + " historical batches");
-            MotionEvent.PointerCoords[] hCoords = { new MotionEvent.PointerCoords() };
-            for (int i = 0; i < historySize; i++) {
-                event.getHistoricalPointerCoords(0, i, hCoords[0]);
-                hCoords[0].orientation = rotateOrientation(hCoords[0].orientation);
-                patched.addBatch(event.getHistoricalEventTime(i), hCoords, event.getMetaState());
+            MotionEvent.PointerCoords[] batchCoords = { new MotionEvent.PointerCoords() };
+
+            // 追加 history[1] … history[N-1]
+            for (int i = 1; i < historySize; i++) {
+                event.getHistoricalPointerCoords(0, i, batchCoords[0]);
+                batchCoords[0].orientation = rotateOrientation(batchCoords[0].orientation);
+                patched.addBatch(event.getHistoricalEventTime(i), batchCoords, event.getMetaState());
             }
+
+            // 最后追加真正的「当前」样本
+            MotionEvent.PointerCoords[] currentCoords = { new MotionEvent.PointerCoords() };
+            event.getPointerCoords(0, currentCoords[0]);
+            currentCoords[0].orientation = rotateOrientation(currentCoords[0].orientation);
+            patched.addBatch(event.getEventTime(), currentCoords, event.getMetaState());
         }
 
-        // 替换事件并回收原事件
+        // 替换事件；不要 recycle 原始事件，其生命周期由 native InputDispatcher 管理
         param.args[1] = patched;
-        try {
-            event.recycle();
-        } catch (Throwable t) {
-            if (DEBUG) XposedBridge.log(TAG + " [patch] event.recycle() failed (may already be recycled): " + t.getMessage());
-        }
-
         if (DEBUG) XposedBridge.log(TAG + " [patch] Event replaced successfully");
     }
 }
