@@ -19,3 +19,9 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# 保留入口类
+-keep class cc.star0.stylusorientationfixer.MainHook { *; }
+
+# 保留 Xposed 框架 API
+-keep class de.robv.android.xposed.** { *; }
